@@ -1,0 +1,93 @@
+name: Build Android-FuckDrmID
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;30.0.16248370"
+
+      - name: Build ARM64 native library
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK="$ANDROID_HOME/ndk/30.0.16248370"
+          "$NDK/ndk-build" \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=Android.mk \
+            NDK_APPLICATION_MK=Application.mk \
+            NDK_LIBS_OUT="$GITHUB_WORKSPACE/build/libs" \
+            NDK_OUT="$GITHUB_WORKSPACE/build/obj" \
+            APP_MODULES=drmid \
+            V=1
+
+          test -s "$GITHUB_WORKSPACE/build/libs/arm64-v8a/libdrmid.so"
+          file "$GITHUB_WORKSPACE/build/libs/arm64-v8a/libdrmid.so"
+
+      - name: Package Magisk module
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_NO="${GITHUB_RUN_NUMBER:-1}"
+          rm -rf package release
+          mkdir -p package/META-INF/com/google/android release
+          cp build/libs/arm64-v8a/libdrmid.so package/libdrmid.so
+
+          cat > package/module.prop <<EOF
+          id=android_fuckdrmid
+          name=Android-FuckDrmID
+          version=1.0.${RUN_NO}
+          versionCode=${RUN_NO}
+          author=jamlops (community CI build)
+          description=ARM64 Zygisk Next module; requires Zygisk Next.
+          EOF
+
+          cat > package/zn_modules.txt <<'EOF'
+          name=android.hardware.drm-service.widevine libdrmid.so
+          EOF
+
+          cat > package/META-INF/com/google/android/update-binary <<'EOF'
+          #!/sbin/sh
+          umask 022
+          OUTFD=$2
+          ZIPFILE=$3
+          mount /data 2>/dev/null
+          [ -f /data/adb/magisk/util_functions.sh ] || exit 1
+          . /data/adb/magisk/util_functions.sh
+          install_module
+          exit 0
+          EOF
+          chmod 0755 package/META-INF/com/google/android/update-binary
+          printf '#MAGISK\n' > package/META-INF/com/google/android/updater-script
+
+          (cd package && zip -qr "../release/Android-FuckDrmID-${RUN_NO}.zip" .)
+          sha256sum \
+            build/libs/arm64-v8a/libdrmid.so \
+            "release/Android-FuckDrmID-${RUN_NO}.zip" \
+            > release/SHA256SUMS.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-FuckDrmID-build-${{ github.run_number }}
+          path: |
+            build/libs/arm64-v8a/libdrmid.so
+            release/Android-FuckDrmID-*.zip
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
